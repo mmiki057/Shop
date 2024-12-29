@@ -45,7 +45,7 @@ def handle_callback(call: CallbackQuery):
 
     if data == 'list_items':
         keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton('🔢 Бины', callback_data='bins'))
+        keyboard.add(InlineKeyboardButton('Бины', callback_data='bins'))
         keyboard.add(InlineKeyboardButton('🌍 Гео', callback_data='geo'))
         keyboard.add(InlineKeyboardButton('🔍 Поиск по BIN', callback_data='search_bin'))
         keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
@@ -65,7 +65,7 @@ def handle_callback(call: CallbackQuery):
         keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
 
         bot.edit_message_text(
-            text="🔢 Выберите BIN:",
+            text="Выберите BIN:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=keyboard
@@ -90,7 +90,7 @@ def handle_callback(call: CallbackQuery):
         results = search_by_bin(bin_prefix)
         text = "Результаты поиска:\n"
         for geo, bin_code in results:
-            text += f"🌍 {geo}, 🔢 BIN: {bin_code}\n"
+            text += f"🌍 {geo}, BIN: {bin_code}\n"
 
         bot.edit_message_text(
             text=text,
@@ -104,7 +104,7 @@ def handle_callback(call: CallbackQuery):
         results = search_by_geo(geo)
         text = "Результаты поиска:\n"
         for geo, bin_code in results:
-            text += f"🌍 {geo}, 🔢 BIN: {bin_code}\n"
+            text += f"🌍 {geo}, BIN: {bin_code}\n"
 
         bot.edit_message_text(
             text=text,
@@ -164,7 +164,7 @@ def handle_bin_input(message):
     results = search_by_bin(bin_prefix)
     if results:
         text = "Результаты поиска:\n" + "\n".join(
-            f"🌍 {geo}, 🔢 BIN: {bin_code}" for geo, bin_code in results
+            f"🌍 {geo}, BIN: {bin_code}" for geo, bin_code in results
         )
     else:
         text = f"Нет данных для BIN: {bin_prefix}"
