@@ -1,6 +1,6 @@
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price
 from user_manager import initialize_user_table, register_user, get_user_profile
 
 # Создаем бота
@@ -184,10 +184,27 @@ def handle_bin_input(message):
     bot.send_message(message.chat.id, text)
     user_states[message.chat.id] = None
 
+@bot.message_handler(commands=['set_price'])
+def set_price(message):
+    try:
+        user_input = message.text.split()
+        if len(user_input) != 3:
+            bot.send_message(message.chat.id, "Используйте команду в формате: /set_price [ID BIN] [Цена]")
+            return
+
+        bin_id = int(user_input[1])
+        price = float(user_input[2])
+        set_bin_price(bin_id, price)
+        bot.send_message(message.chat.id, f"Цена {price} $ установлена для BIN с ID {bin_id}.")
+    except ValueError:
+        bot.send_message(message.chat.id, "Неверный формат команды. Используйте: /set_price ID BIN Цена")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Произошла ошибка: {e}")
+
 # Запуск бота
 if __name__ == '__main__':
-    initialize_payments_table()
-    initialize_bins_table()
-    load_payment_info_from_file()
-    initialize_user_table()
+    #initialize_payments_table()
+    #initialize_bins_table()
+    #load_payment_info_from_file()
+    #initialize_user_table()
     bot.polling(none_stop=True)
