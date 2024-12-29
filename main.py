@@ -1,6 +1,6 @@
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table
 from user_manager import initialize_user_table, register_user, get_user_profile
 
 # Создаем бота
@@ -174,6 +174,8 @@ def handle_bin_input(message):
 
 # Запуск бота
 if __name__ == '__main__':
+    initialize_payments_table()
+    initialize_bins_table()
     load_payment_info_from_file()
     initialize_user_table()
     bot.polling(none_stop=True)
