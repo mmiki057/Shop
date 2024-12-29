@@ -63,8 +63,8 @@ def handle_callback(call: CallbackQuery):
         elif data == 'bins':
             bins = get_unique_bins()
             keyboard = InlineKeyboardMarkup()
-            for bin_code in bins:
-                keyboard.add(InlineKeyboardButton(bin_code, callback_data=f'bin_{bin_code}'))
+            for bin_id, bin_code, price in bins:
+                keyboard.add(InlineKeyboardButton(f"{bin_code} - {price}", callback_data=f'bin_{bin_id}'))
             keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
 
             bot.edit_message_text(
