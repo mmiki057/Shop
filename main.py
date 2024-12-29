@@ -1,13 +1,26 @@
 import telebot
+import time
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price
 from user_manager import initialize_user_table, register_user, get_user_profile
+from telebot import apihelper
+
+apihelper.RETRY_ON_TIMEOUT = True
+apihelper.SESSION_TIMEOUT = 60  # Максимальное время ожидания для одного запроса
+apihelper.READ_TIMEOUT = 60     # Время ожидания чтения данных
+apihelper.CONNECT_TIMEOUT = 60  # Время ожидания подключения
 
 # Создаем бота
 bot = telebot.TeleBot('8053455390:AAGVSy0-_GGX4yaF0J9yHcB8xXM94jBBh3A')
 
 # Словарь для отслеживания состояний пользователей
 user_states = {}
+
+# Функция для проверки прав администратора
+def is_admin(user_id):
+    admin_ids = [7338415218, 987654321]  # ID администраторов
+    return user_id in admin_ids
+
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup()
@@ -21,7 +34,7 @@ def get_main_menu():
         InlineKeyboardButton('💰 Пополнить баланс', callback_data='balance')
     )
     keyboard.add(InlineKeyboardButton('🔄 Возврат товара', callback_data='refund'))
-    keyboard.add(InlineKeyboardButton('🛠️ Панель поставщика', callback_data='supplier_panel'))
+    keyboard.add(InlineKeyboardButton('🛠️ Панель администратора', callback_data='admin_panel'))
     return keyboard
 
 # Команда /start
@@ -40,9 +53,43 @@ def start(message):
         reply_markup=get_main_menu()
     )
 
+def handle_admin_buttons(call):
+    data = call.data
+
+    if data == 'set_bin_price_menu':
+        bins = get_unique_bins()
+        keyboard = InlineKeyboardMarkup()
+        for bin_id, bin_code, price in bins:
+            keyboard.add(InlineKeyboardButton(f"ID: {bin_id} | BIN: {bin_code} | Цена: {price}", 
+                                              callback_data=f'set_price_{bin_id}'))
+        keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='admin_panel'))
+
+        bot.edit_message_text(
+            text='Выберите BIN для назначения цены:',
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=keyboard
+        )
+    elif data.startswith('set_price_'):
+        try:
+            bin_id = int(data.split('_')[2])
+            user_states[call.message.chat.id] = f'awaiting_price_for_{bin_id}'
+            bot.send_message(call.message.chat.id, f'💵 Введите новую цену для BIN с ID {bin_id}:')
+        except ValueError:
+            bot.send_message(call.message.chat.id, "⚠️ Ошибка: некорректный ID BIN.")
+
+
 # Обработка нажатий на кнопки
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call: CallbackQuery):
+    user_id = call.from_user.id
+
+    # Проверка регистрации
+    user_profile = get_user_profile(user_id)
+    if not user_profile:
+        bot.answer_callback_query(call.id, "Вы не зарегистрированы. Введите /start для регистрации.")
+        return
+
     data = call.data
 
     try:
@@ -164,47 +211,77 @@ def handle_callback(call: CallbackQuery):
                 text='Добро пожаловать в маркет! В маркете представлены качественные материалы по доступным ценам. \n\nСовершая покупку, вы подтверждаете, что ознакомлены с правилами покупки и возврата материала.',
                 reply_markup=get_main_menu()
             )
+        elif data == 'admin_panel':
+            if not is_admin(user_id):
+                bot.answer_callback_query(call.id, "❌ У вас нет прав доступа к админ-панели.")
+                return
 
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton('📝 Назначить цену BIN', callback_data='set_bin_price_menu'))
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
+
+            bot.edit_message_text(
+                text='🛠️ Панель администратора:\nВыберите действие:',
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard
+            )
+        elif data.startswith('set_price_') or data == 'set_bin_price_menu':
+            handle_admin_buttons(call)
+        else:
+            bot.answer_callback_query(call.id, "⚠️ Неизвестная команда.")
     except Exception as e:
-        print(f"Ошибка при обработке {data}: {e}")
+        print(f"[ERROR] Ошибка в обработке команды: {e}")
+        bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
 
+# Функция для обработки текстовых сообщений от пользователя
+@bot.message_handler(func=lambda message: True)
+def handle_text_messages(message):
+    chat_id = message.chat.id
+    state = user_states.get(chat_id)
 
-# Обработка текстового ввода
-@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == 'awaiting_bin_input')
-def handle_bin_input(message):
-    bin_prefix = message.text.strip()
-    results = search_by_bin(bin_prefix)
-    if results:
-        text = "Результаты поиска:\n" + "\n".join(
-            f"🌍 {geo}, BIN: {bin_code}" for geo, bin_code in results
-        )
+    if state:
+        if state == 'awaiting_bin_input':
+            if message.text.isdigit():
+                results = search_by_bin(message.text)
+                if results:
+                    text = "Результаты поиска:\n"
+                    for geo, bin_code in results:
+                        text += f"🌍 {geo}, BIN: {bin_code}\n"
+                else:
+                    text = "❌ Ничего не найдено по указанному BIN."
+
+                bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton('🔙 Назад', callback_data='list_items')
+                ))
+                user_states.pop(chat_id)
+            else:
+                bot.send_message(chat_id, "⚠️ Введите корректные цифры BIN.")
+        elif state.startswith('awaiting_price_for_'):
+            try:
+                bin_id = int(state.split('_')[-1])
+                price = float(message.text)
+                set_bin_price(bin_id, price)
+                bot.send_message(chat_id, f"✅ Цена для BIN с ID {bin_id} успешно обновлена на {price:.2f}💰.")
+                user_states.pop(chat_id)
+            except ValueError:
+                bot.send_message(chat_id, "⚠️ Укажите корректное число в качестве цены.")
+        else:
+            bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
     else:
-        text = f"Нет данных для BIN: {bin_prefix}"
-
-    bot.send_message(message.chat.id, text)
-    user_states[message.chat.id] = None
-
-@bot.message_handler(commands=['set_price'])
-def set_price(message):
-    try:
-        user_input = message.text.split()
-        if len(user_input) != 3:
-            bot.send_message(message.chat.id, "Используйте команду в формате: /set_price [ID BIN] [Цена]")
-            return
-
-        bin_id = int(user_input[1])
-        price = float(user_input[2])
-        set_bin_price(bin_id, price)
-        bot.send_message(message.chat.id, f"Цена {price} $ установлена для BIN с ID {bin_id}.")
-    except ValueError:
-        bot.send_message(message.chat.id, "Неверный формат команды. Используйте: /set_price ID BIN Цена")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Произошла ошибка: {e}")
+        bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
 
 # Запуск бота
 if __name__ == '__main__':
-    #initialize_payments_table()
-    #initialize_bins_table()
-    #load_payment_info_from_file()
-    #initialize_user_table()
-    bot.polling(none_stop=True)
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=2, timeout=60, long_polling_timeout=60)
+        except apihelper.ReadTimeout:
+            print("[ERROR] ReadTimeout: Сервер Telegram не ответил вовремя. Переподключение...")
+            time.sleep(5)
+        except apihelper.ApiException as e:
+            print(f"[ERROR] ApiException: {e}")
+            time.sleep(5)
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {e}")
+            time.sleep(5)
