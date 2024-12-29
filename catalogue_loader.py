@@ -1,6 +1,26 @@
 # catalogue_loader.py
 import sqlite3
 
+#Добавление колонки цен в базу бинов
+def add_price_column_to_bins():
+    # Используйте корректное имя вашей базы данных (замените payments.db, если оно другое)
+    conn = sqlite3.connect("payment_info.db")
+    cursor = conn.cursor()
+    try:
+        # Добавление колонки `price` в таблицу `bins`, если она еще не существует
+        cursor.execute("""
+            ALTER TABLE bins ADD COLUMN price REAL DEFAULT 0.0
+        """)
+        conn.commit()
+        print("Колонка 'price' успешно добавлена в таблицу 'bins'.")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e):
+            print("Колонка 'price' уже существует.")
+        else:
+            print(f"Произошла ошибка: {e}")
+    finally:
+        conn.close()
+
 # Функция проверки уникальности данных
 def is_payment_info_unique(geo, bank, number, date, cvc):
     with sqlite3.connect('payment_info.db') as conn:
@@ -68,10 +88,13 @@ def get_unique_geos():
 
 # Получение уникальных бинов
 def get_unique_bins():
-    with sqlite3.connect('payment_info.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT SUBSTR(number, 1, 6) as bin FROM payments")
-        bins = [row[0] for row in cursor.fetchall()]
+    conn = sqlite3.connect("payment_info.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, SUBSTR(bin, 1, 6), price FROM bins
+    """)
+    bins = cursor.fetchall()
+    conn.close()
     return bins
 
 # Инициализация таблицы бинов
@@ -133,3 +156,16 @@ def initialize_payments_table():
         )
         """)
         conn.commit()
+
+#Назначение цены к BIN ID
+def set_bin_price(bin_id, price):
+    conn = sqlite3.connect("payment_info.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE bins
+        SET price = ?
+        WHERE id = ?
+    """, (price, bin_id))
+    conn.commit()
+    conn.close()
+    print(f"Цена {price} установлена для BIN с ID {bin_id}")
