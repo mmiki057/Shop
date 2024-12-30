@@ -6,15 +6,16 @@ from user_manager import initialize_user_table, register_user, get_user_profile
 from telebot import apihelper
 
 apihelper.RETRY_ON_TIMEOUT = True
-apihelper.SESSION_TIMEOUT = 60  # Максимальное время ожидания для одного запроса
-apihelper.READ_TIMEOUT = 60     # Время ожидания чтения данных
-apihelper.CONNECT_TIMEOUT = 60  # Время ожидания подключения
+apihelper.SESSION_TIMEOUT = 90  # Максимальное время ожидания для одного запроса
+apihelper.READ_TIMEOUT = 90     # Время ожидания чтения данных
+apihelper.CONNECT_TIMEOUT = 90  # Время ожидания подключения
 
 # Создаем бота
 bot = telebot.TeleBot('8053455390:AAGVSy0-_GGX4yaF0J9yHcB8xXM94jBBh3A')
 
 # Словарь для отслеживания состояний пользователей
 user_states = {}
+user_top_up_amounts = {}
 
 # Функция для проверки прав администратора
 def is_admin(user_id):
@@ -228,8 +229,74 @@ def handle_callback(call: CallbackQuery):
             )
         elif data.startswith('set_price_') or data == 'set_bin_price_menu':
             handle_admin_buttons(call)
+
+        elif data == 'balance':
+            # Создаем клавиатуру с выбором сети
+            keyboard = InlineKeyboardMarkup()
+            keyboard.row(
+                InlineKeyboardButton('TRC20', callback_data='network_trc20'),
+                InlineKeyboardButton('ARB', callback_data='network_arb'),
+                InlineKeyboardButton('SOL', callback_data='network_sol')
+            )
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
+
+            bot.edit_message_text(
+                text="💰 Выберите сеть для пополнения:",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard
+            )
+        
+        elif data.startswith('network_'):
+            network = data.split('_')[1].upper()
+            address = ''
+            
+            # Задаем адреса для каждой сети
+            if network == 'TRC20':
+                address = 'TMax4UdZEWzh3FYG889fwSivknWKhd4CJN'
+            elif network == 'ARB':
+                address = '0x79d9b8fd2ce5b089f9d6a85679e82417908740e4'
+            elif network == 'SOL':
+                address = 'AzdwrmrmBPyDqUw6xw1X1f61xwAoeiymYP7nrjJ949rr'
+
+            # Клавиатура с подтверждением оплаты
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(InlineKeyboardButton('✅ Я оплатил', callback_data=f'confirm_payment_{network}'))
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='balance'))
+
+            bot.edit_message_text(
+                text=f"💳 Для пополнения через сеть {network}, переведите средства на адрес:\n\n`{address}`\n\nПосле оплаты нажмите '✅ Я оплатил'.",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+
+        elif data.startswith('confirm_payment_'):
+            network = data.split('_')[2].upper()
+            admin_id = 7338415218  # ID администратора, куда отправлять запрос
+            bot.send_message(
+                admin_id,
+                text=f"💰 Пользователь {call.from_user.username} ({call.from_user.id}) заявил о пополнении баланса через сеть {network}. Проверьте транзакцию и подтвердите."
+            )
+            bot.send_message(
+                call.message.chat.id,
+                text="✅ Заявка на пополнение отправлена администратору. Ожидайте подтверждения.",
+                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
+            )
+
+        elif data == 'back_to_main':
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text='Добро пожаловать в маркет! В маркете представлены качественные материалы по доступным ценам. \n\nСовершая покупку, вы подтверждаете, что ознакомлены с правилами покупки и возврата материала.',
+                
+                reply_markup=get_main_menu()
+            )
+        
         else:
             bot.answer_callback_query(call.id, "⚠️ Неизвестная команда.")
+
     except Exception as e:
         print(f"[ERROR] Ошибка в обработке команды: {e}")
         bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
@@ -270,6 +337,99 @@ def handle_text_messages(message):
             bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
     else:
         bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
+
+# Обработка кнопки "Пополнить баланс"
+@bot.callback_query_handler(func=lambda call: call.data == 'balance')
+def recharge_balance(call):
+    markup = InlineKeyboardMarkup()
+    networks = ['TRC20', 'Arbitrum', 'Solana']
+    for network in networks:
+        markup.add(InlineKeyboardButton(network, callback_data=f"select_{network}"))
+    bot.edit_message_text(
+        text="Выберите сеть для перевода:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+
+# Отправка адреса для перевода
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_"))
+def send_payment_address(call):
+    network = call.data.split("_")[1]
+    addresses = {
+        'TRC20': 'TMax4UdZEWzh3FYG889fwSivknWKhd4CJN',
+        'Arbitrum': '0x79d9b8fd2ce5b089f9d6a85679e82417908740e4',
+        'Solana': 'AzdwrmrmBPyDqUw6xw1X1f61xwAoeiymYP7nrjJ949rr'
+    }
+    address = addresses.get(network)
+    if address:
+        bot.edit_message_text(
+            text=f"Адрес для перевода по сети {network}:\n`{address}`\n\nПосле оплаты нажмите кнопку 'Оплатил'.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Оплатил", callback_data=f"paid_{network}"))
+        )
+
+# Обработка кнопки "Оплатил"
+@bot.callback_query_handler(func=lambda call: call.data.startswith("paid_"))
+def confirm_payment_request(call):
+    network = call.data.split("_")[1]
+    admin_id = 123456789  # ID администратора
+    bot.send_message(
+        admin_id,
+        f"Пользователь @{call.from_user.username} сообщил о переводе по сети {network}. Проверьте платеж."
+    )
+    bot.edit_message_text(
+        text="Ваш запрос отправлен администратору. Ожидайте подтверждения.",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id
+    )
+
+# Подтверждение оплаты администратором
+@bot.message_handler(commands=['confirm'])
+def confirm_balance(message):
+    ADMIN_ID = 7338415218  # Идентификатор администратора
+
+    # Проверка прав доступа
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "У вас нет прав для выполнения этой команды.")
+        return
+
+    try:
+        # Проверяем правильность формата команды
+        parts = message.text.split()
+        if len(parts) != 3:
+            raise ValueError("Неверный формат команды.")
+        
+        _, user_id, amount = parts
+        user_id = int(user_id)
+        amount = float(amount)
+
+        # Проверяем, существует ли пользователь
+        if not user_exists(user_id):
+            bot.reply_to(message, "Пользователь с таким ID не найден.")
+            return
+
+        # Обновляем баланс пользователя
+        update_balance(user_id, amount)
+        bot.send_message(user_id, f"✅ Ваш баланс пополнен на {amount} единиц.")
+        bot.reply_to(message, "✅ Оплата успешно подтверждена.")
+    
+    except ValueError:
+        bot.reply_to(message, "❌ Ошибка в формате команды. Используйте: /confirm <user_id> <amount>")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Произошла ошибка: {e}")
+
+
+def update_balance(user_id, amount):
+    # Обновление баланса в базе данных
+    # Здесь можно добавить обновление в SQLite или другой базе
+    print(f"Баланс пользователя {user_id} обновлен на {amount} единиц.")
+
+def user_exists(user_id):
+    # Пример проверки существования пользователя
+    return user_id
 
 # Запуск бота
 if __name__ == '__main__':
