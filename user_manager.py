@@ -49,3 +49,5 @@ def increase_user_balance(user_id, amount):
     connection.commit()
     connection.close()
     return cursor.rowcount > 0
+
+initialize_users_table()
