@@ -1,6 +1,7 @@
 import telebot
 import time
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+import logging
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, ForceReply
 from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price
 from user_manager import initialize_user_table, register_user, get_user_profile
 from telebot import apihelper
@@ -16,6 +17,19 @@ bot = telebot.TeleBot('8053455390:AAGVSy0-_GGX4yaF0J9yHcB8xXM94jBBh3A')
 # Словарь для отслеживания состояний пользователей
 user_states = {}
 user_top_up_amounts = {}
+pending_confirmations = {}
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO,  # Уровень логирования (INFO, DEBUG, ERROR, etc.)
+    handlers=[
+        logging.StreamHandler(),  # Вывод в консоль
+        logging.FileHandler("bot.log")  # Запись в файл
+    ]
+)
+
+logger = logging.getLogger()
 
 # Функция для проверки прав администратора
 def is_admin(user_id):
@@ -94,7 +108,9 @@ def handle_callback(call: CallbackQuery):
     data = call.data
 
     try:
+        logger.info(f"Пользователь {call.from_user.username} ({user_id}) сделал запрос: {data}")
         if data == 'list_items':
+            logger.info(f"Пользователь {call.from_user.username} запрашивает список карт.")
             keyboard = InlineKeyboardMarkup()
             keyboard.add(InlineKeyboardButton('Бины', callback_data='bins'))
             keyboard.add(InlineKeyboardButton('🌍 Гео', callback_data='geo'))
@@ -231,6 +247,7 @@ def handle_callback(call: CallbackQuery):
             handle_admin_buttons(call)
 
         elif data == 'balance':
+            logger.info(f"Пользователь {call.from_user.username} запрашивает пополнение баланса.")
             # Создаем клавиатуру с выбором сети
             keyboard = InlineKeyboardMarkup()
             keyboard.row(
@@ -273,17 +290,27 @@ def handle_callback(call: CallbackQuery):
             )
 
         elif data.startswith('confirm_payment_'):
+            logger.info(f"Пользователь {call.from_user.username} подтверждает пополнение баланса.")
             network = data.split('_')[2].upper()
             admin_id = 7338415218  # ID администратора, куда отправлять запрос
+
+            # Отправляем сообщение администратору с кнопками подтверждения
             bot.send_message(
                 admin_id,
-                text=f"💰 Пользователь {call.from_user.username} ({call.from_user.id}) заявил о пополнении баланса через сеть {network}. Проверьте транзакцию и подтвердите."
+                f"💰 Пользователь @{call.from_user.username} ({call.from_user.id}) заявил о пополнении баланса через сеть {network}. Проверьте перевод.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton('✅ Подтвердить', callback_data=f'confirm_{call.from_user.id}_{network}'),
+                    InlineKeyboardButton('❌ Отклонить', callback_data=f'reject_{call.from_user.id}_{network}')
+                )
             )
+
+            # Уведомляем пользователя, что запрос отправлен
             bot.send_message(
                 call.message.chat.id,
                 text="✅ Заявка на пополнение отправлена администратору. Ожидайте подтверждения.",
                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
             )
+
 
         elif data == 'back_to_main':
             bot.edit_message_text(
@@ -296,8 +323,10 @@ def handle_callback(call: CallbackQuery):
         
         else:
             bot.answer_callback_query(call.id, "⚠️ Неизвестная команда.")
+            logger.warning(f"Неизвестный запрос от пользователя {call.from_user.username}: {data}")
 
     except Exception as e:
+        logger.error(f"Ошибка при обработке запроса {data} от пользователя {user_id}: {e}")
         print(f"[ERROR] Ошибка в обработке команды: {e}")
         bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
 
@@ -338,9 +367,24 @@ def handle_text_messages(message):
     else:
         bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
 
+
+@bot.message_handler(func=lambda message: user_states[message.chat.id] == 'awaiting_amount')
+def process_amount(message):
+    try:
+        amount = int(message.text)
+        if amount <= 0:
+            raise ValueError
+        user_top_up_amounts[message.chat.id] = amount
+        user_states[message.chat.id] = 'awaiting_confirmation'
+        bot.send_message(message.chat.id, f"Вы хотите пополнить на {amount}$? Напишите 'да' для подтверждения.")
+    except ValueError:
+        bot.send_message(message.chat.id, "Пожалуйста, введите корректную сумму.")
+
+
 # Обработка кнопки "Пополнить баланс"
 @bot.callback_query_handler(func=lambda call: call.data == 'balance')
 def recharge_balance(call):
+    
     markup = InlineKeyboardMarkup()
     networks = ['TRC20', 'Arbitrum', 'Solana']
     for network in networks:
@@ -375,51 +419,118 @@ def send_payment_address(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("paid_"))
 def confirm_payment_request(call):
     network = call.data.split("_")[1]
-    admin_id = 123456789  # ID администратора
+    admin_id = 7338415218  # ID администратора
     bot.send_message(
-        admin_id,
-        f"Пользователь @{call.from_user.username} сообщил о переводе по сети {network}. Проверьте платеж."
+    admin_id,
+    f"💰 Пользователь @{call.from_user.username} ({call.from_user.id}) заявил о пополнении баланса через сеть {network}. Проверьте перевод.",
+    reply_markup=InlineKeyboardMarkup().add(
+        InlineKeyboardButton('✅ Подтвердить', callback_data=f'confirm_{call.from_user.id}_{network}'),
+        InlineKeyboardButton('❌ Отклонить', callback_data=f'reject_{call.from_user.id}_{network}')
     )
+)
+
     bot.edit_message_text(
         text="Ваш запрос отправлен администратору. Ожидайте подтверждения.",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id
     )
 
-# Подтверждение оплаты администратором
 @bot.message_handler(commands=['confirm'])
-def confirm_balance(message):
-    ADMIN_ID = 7338415218  # Идентификатор администратора
-
-    # Проверка прав доступа
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "У вас нет прав для выполнения этой команды.")
-        return
-
+def confirm_manual(message):
     try:
-        # Проверяем правильность формата команды
-        parts = message.text.split()
-        if len(parts) != 3:
-            raise ValueError("Неверный формат команды.")
-        
-        _, user_id, amount = parts
-        user_id = int(user_id)
-        amount = float(amount)
-
-        # Проверяем, существует ли пользователь
-        if not user_exists(user_id):
-            bot.reply_to(message, "Пользователь с таким ID не найден.")
+        args = message.text.split()
+        if len(args) < 3:
+            bot.reply_to(message, "⚠️ Используйте формат: /confirm <user_id> <сумма>")
             return
 
-        # Обновляем баланс пользователя
+        user_id = int(args[1])
+        amount = float(args[2])
+
         update_balance(user_id, amount)
-        bot.send_message(user_id, f"✅ Ваш баланс пополнен на {amount} единиц.")
-        bot.reply_to(message, "✅ Оплата успешно подтверждена.")
-    
+        bot.reply_to(message, f"✅ Баланс пользователя {user_id} пополнен на {amount}.")
+        bot.send_message(user_id, f"✅ Ваш платёж подтверждён. Баланс пополнен на {amount}.")
     except ValueError:
-        bot.reply_to(message, "❌ Ошибка в формате команды. Используйте: /confirm <user_id> <amount>")
+        bot.reply_to(message, "⚠️ Укажите корректные данные: /confirm <user_id> <сумма>")
+
+# Подтверждение оплаты администратором
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_'))
+def process_confirmation(call):
+    try:
+        data = call.data.split('_')
+        user_id = int(data[1])  # ID пользователя
+        network = data[2]       # Сеть (например, ARB)
+
+        # Здесь вы обновляете баланс пользователя
+        # Например:
+        amount = 100  # Подставьте сумму из вашей базы данных или другого источника
+        set_user_balance(user_id, amount)
+
+        # Уведомляем пользователя о подтверждении
+        bot.send_message(user_id, f"✅ Ваш платеж через сеть {network} подтверждён. Баланс пополнен на {amount}.")
+        bot.send_message(call.message.chat.id, "✅ Вы успешно подтвердили платеж.")
+        logger.info(f"Администратор подтвердил платеж для пользователя {user_id} через сеть {network}.")
     except Exception as e:
-        bot.reply_to(message, f"❌ Произошла ошибка: {e}")
+        logger.error(f"Ошибка при обработке подтверждения: {e}")
+        bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка при подтверждении платежа.")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reject_'))
+def process_rejection(call):
+    try:
+        data = call.data.split('_')
+        user_id = int(data[1])  # ID пользователя
+        network = data[2]       # Сеть (например, ARB)
+
+        # Уведомляем пользователя об отказе
+        bot.send_message(user_id, f"❌ Ваш платеж через сеть {network} отклонён. Свяжитесь с поддержкой, если у вас есть вопросы.")
+        bot.send_message(call.message.chat.id, "❌ Вы успешно отклонили платеж.")
+        logger.info(f"Администратор отклонил платеж для пользователя {user_id} через сеть {network}.")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке отказа: {e}")
+        bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка при отклонении платежа.")
+
+
+
+    
+@bot.message_handler(func=lambda message: message.reply_to_message and 'Введите сумму пополнения' in message.reply_to_message.text)
+def process_admin_amount(message):
+    try:
+        admin_id = message.from_user.id
+        if admin_id not in pending_confirmations:
+            bot.send_message(admin_id, "⚠️ Нет данных для подтверждения. Попробуйте снова.")
+            return
+        
+        user_id = pending_confirmations[admin_id]['user_id']
+        network = pending_confirmations[admin_id]['network']
+        
+        # Проверяем, что сумма корректная
+        try:
+            amount = float(message.text)
+            if amount <= 0:
+                bot.send_message(admin_id, "⚠️ Сумма должна быть положительным числом.")
+                return
+        except ValueError:
+            bot.send_message(admin_id, "⚠️ Введите корректное число.")
+            return
+        
+        # Обновляем баланс пользователя
+        user_profile = get_user_profile(user_id)
+        if user_profile:
+            new_balance = user_profile[1] + amount  # Предполагается, что второй элемент — баланс
+            set_user_balance(user_id, new_balance)
+            
+            bot.send_message(user_id, f"✅ Ваш баланс был пополнен на {amount} через сеть {network}.")
+            bot.send_message(admin_id, f"✅ Баланс пользователя {user_id} успешно пополнен на {amount}.")
+        else:
+            bot.send_message(admin_id, "❌ Пользователь не найден.")
+        
+        # Очищаем временные данные
+        del pending_confirmations[admin_id]
+        
+    except Exception as e:
+        print(f"[ERROR] Ошибка при обработке суммы: {e}")
+        bot.send_message(admin_id, "⚠️ Произошла ошибка при обработке суммы.")
+
 
 
 def update_balance(user_id, amount):
@@ -430,6 +541,15 @@ def update_balance(user_id, amount):
 def user_exists(user_id):
     # Пример проверки существования пользователя
     return user_id
+
+def set_user_balance(user_id, new_balance):
+    import sqlite3
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+    conn.commit()
+    conn.close()
+
 
 # Запуск бота
 if __name__ == '__main__':
