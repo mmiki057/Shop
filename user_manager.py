@@ -1,17 +1,24 @@
 import sqlite3
 
 # Инициализация таблицы пользователей
-def initialize_user_table():
+def initialize_users_table():
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
-            balance REAL DEFAULT 0,
-            registered_at TEXT DEFAULT (datetime('now'))
+            balance REAL DEFAULT 0.0,
+            registered_at TEXT
         )
         """)
+        conn.commit()
+
+
+def update_user_balance(user_id, amount):
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
 
 # Регистрация нового пользователя
@@ -35,9 +42,10 @@ def get_user_profile(user_id):
         user = cursor.fetchone()
     return user
 
-# Обновление баланса пользователя
-def update_user_balance(user_id, amount):
-    with sqlite3.connect('payment_info.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
+def increase_user_balance(user_id, amount):
+    connection = sqlite3.connect('payment_info.db')
+    cursor = connection.cursor()
+    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    connection.commit()
+    connection.close()
+    return cursor.rowcount > 0
