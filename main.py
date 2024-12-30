@@ -1,10 +1,11 @@
 import telebot
 import time
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins, get_items_count_by_bin, get_items_by_bin
 from user_manager import initialize_users_table, register_user, get_user_profile
 from telebot import apihelper
 from telebot.types import Message
+from oplata import get_item_details, get_item_price, purchase_item
 
 apihelper.RETRY_ON_TIMEOUT = True
 apihelper.SESSION_TIMEOUT = 60  # Максимальное время ожидания для одного запроса
@@ -23,6 +24,26 @@ user_balances = {}
 def is_admin(user_id):
     admin_ids = [7338415218, 987654321]  # ID администраторов
     return user_id in admin_ids
+
+def handle_purchase(user_id, item_id):
+    # Предположим, у вас есть функция `get_item_details`, которая возвращает полную информацию о товаре
+    item_details = get_item_details(item_id)
+    
+    if item_details:
+        geo, bank, number, date, code = item_details
+        message = (
+            f"✅ Покупка успешно завершена!\n\n"
+            f"📌 Информация о товаре:\n"
+            f"🌍 Гео: {geo}\n"
+            f"🏦 Банк: {bank}\n"
+            f"🔢 Номер: {number}\n"
+            f"📅 Дата: {date}\n"
+            f"🔑 Код: {code}"
+        )
+        bot.send_message(user_id, message)
+    else:
+        bot.send_message(user_id, "❌ Ошибка: товар не найден.")
+
     
 def get_main_menu():
     keyboard = InlineKeyboardMarkup()
@@ -107,20 +128,6 @@ def handle_callback(call: CallbackQuery):
                 reply_markup=keyboard
             )
 
-        elif data == 'bins':
-            bins = get_unique_bins()
-            keyboard = InlineKeyboardMarkup()
-            for bin_id, bin_code, price in bins:
-                keyboard.add(InlineKeyboardButton(f"{bin_code} - {price}", callback_data=f'bin_{bin_id}'))
-            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
-
-            bot.edit_message_text(
-                text="Выберите BIN:",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=keyboard
-            )
-
         elif data == 'geo':
             geo_data = get_unique_geos()
             keyboard = InlineKeyboardMarkup()
@@ -133,20 +140,6 @@ def handle_callback(call: CallbackQuery):
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=keyboard
-            )
-
-        elif data.startswith('bin_'):
-            bin_prefix = data.split('_')[1]
-            results = search_by_bin(bin_prefix)
-            text = "Результаты поиска:\n"
-            for geo, bin_code in results:
-                text += f"🌍 {geo}, BIN: {bin_code}\n"
-
-            bot.edit_message_text(
-                text=text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='bins'))
             )
 
         elif data.startswith('geo_'):
@@ -162,6 +155,67 @@ def handle_callback(call: CallbackQuery):
                 message_id=call.message.message_id,
                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='geo'))
             )
+        
+        elif data == 'bins':
+            bins = get_unique_bins()
+            keyboard = InlineKeyboardMarkup()
+            for bin_id, bin_code, price in bins:
+                keyboard.add(InlineKeyboardButton(f"{bin_code} - {price}", callback_data=f'bin_{bin_id}'))
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
+
+            bot.edit_message_text(
+                text="Выберите BIN:",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard
+            )
+
+        elif data.startswith('bin_'):
+            bin_id = data.split('_')[1]
+            # Получаем количество товаров с данным BIN
+            items_count = get_items_count_by_bin(bin_id)
+            
+            # Получаем список товаров с данным BIN
+            items = get_items_by_bin(bin_id)
+            
+            # Формируем сообщение с количеством товаров и кнопкой "Купить"
+            text = f"Вы выбрали BIN: {bin_id}\n" \
+                f"Количество товаров с этим BIN: {items_count}\n" \
+                "Выберите товар для покупки:"
+            
+            # Кнопки для каждого товара
+            keyboard = InlineKeyboardMarkup()
+            for item in items:
+                item_name = item['name']
+                item_price = item['price']
+                item_id = item['id']
+                keyboard.add(InlineKeyboardButton(f"{item_name} - {item_price}", callback_data=f'buy_{item_id}'))
+            
+            # Добавляем кнопку "Купить"
+            keyboard.add(InlineKeyboardButton('Купить', callback_data=f'buy_{bin_id}'))
+            
+            # Кнопка "Назад"
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='bins'))
+
+            bot.edit_message_text(
+                text=text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard
+            )
+
+        elif data.startswith('buy_'):
+            # Логика для покупки товара
+            if data.split('_')[0] == 'buy':
+                # Если покупаем товар
+                item_id = data.split('_')[1]
+                purchase_item(item_id)
+                bot.edit_message_text(
+                    text="Вы успешно купили товар!",
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
+                )
 
         elif data == 'search_bin':
             bot.edit_message_text(
@@ -235,8 +289,25 @@ def handle_callback(call: CallbackQuery):
             handle_network_selection(call)
         elif data.startswith('approve_') or data.startswith('reject_'):
             handle_admin_response(call)
+        
+        elif data.startswith('buy_'):
+            item_id = int(data.split('_')[1])
+            user_balance = get_user_balance(user_id)
+
+            # Проверяем, хватает ли средств на балансе
+            item_price = get_item_price(item_id)
+            if user_balance >= item_price:
+                # Списываем средства
+                new_balance = user_balance - item_price
+                update_user_balance(user_id, new_balance)
+                
+                # Обрабатываем покупку
+                handle_purchase(user_id, item_id)
+            else:
+                bot.send_message(user_id, "❌ Недостаточно средств на балансе для покупки.")
         else:
             bot.answer_callback_query(call.id, "⚠️ Неизвестная команда.")
+
     except Exception as e:
         print(f"[ERROR] Ошибка в обработке команды: {e}")
         bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
@@ -273,7 +344,7 @@ def handle_network_selection(call: CallbackQuery):
         bot.send_message(chat_id, f"Вы выбрали сеть TRC20.\nАдрес кошелька: TMax4UdZEWzh3FYG889fwSivknWKhd4CJN\nПосле оплаты, введите точную сумму пополнения (в USDT), для проверки:")
     elif network == 'ARB':
         bot.send_message(chat_id, f"Вы выбрали сеть ARB.\nАдрес кошелька: 0x79d9b8fd2ce5b089f9d6a85679e82417908740e4\nПосле оплаты, введите точную сумму пополнения (в USDT), для проверки:")
-    elif network == 'ARB':
+    elif network == 'SOL':
         bot.send_message(chat_id, f"Вы выбрали сеть SOL.\nАдрес кошелька: AzdwrmrmBPyDqUw6xw1X1f61xwAoeiymYP7nrjJ949rr\nПосле оплаты, введите точную сумму пополнения (в USDT), для проверки:")
     #bot.send_message(chat_id, f"Вы выбрали сеть {network}. Введите сумму для пополнения:")
 
