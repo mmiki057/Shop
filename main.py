@@ -1,7 +1,7 @@
 import telebot
 import time
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins
 from user_manager import initialize_users_table, register_user, get_user_profile
 from telebot import apihelper
 from telebot.types import Message
@@ -57,7 +57,6 @@ def start(message):
 
 def handle_admin_buttons(call):
     data = call.data
-
     if data == 'set_bin_price_menu':
         bins = get_unique_bins()
         keyboard = InlineKeyboardMarkup()
@@ -65,7 +64,6 @@ def handle_admin_buttons(call):
             keyboard.add(InlineKeyboardButton(f"ID: {bin_id} | BIN: {bin_code} | Цена: {price}", 
                                               callback_data=f'set_price_{bin_id}'))
         keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='admin_panel'))
-
         bot.edit_message_text(
             text='Выберите BIN для назначения цены:',
             chat_id=call.message.chat.id,
@@ -280,22 +278,20 @@ def handle_network_selection(call: CallbackQuery):
     #bot.send_message(chat_id, f"Вы выбрали сеть {network}. Введите сумму для пополнения:")
 
 # Функция для обработки ввода суммы пополнения
-@bot.message_handler(func=lambda message: user_states.get(message.chat.id) and user_states[message.chat.id]['state'].startswith('awaiting_amount_for_'))
+@bot.message_handler(func=lambda message: isinstance(user_states.get(message.chat.id), dict) 
+                     and 'state' in user_states[message.chat.id] 
+                     and user_states[message.chat.id]['state'].startswith('awaiting_amount_for_'))
 def handle_text_message_for_top_up(message: Message):
     chat_id = message.chat.id
-    amount = message.text
-
     try:
-        # Преобразуем текст в число и проверяем, что это положительная сумма
-        amount = float(amount)
+        amount = float(message.text)
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной.")
 
-        # Получаем информацию о сети, в которую пользователь хочет пополнить
         network = user_states[chat_id].get('network')
-
-        # Отправляем запрос администратору на подтверждение пополнения
         admin_chat_id = 7338415218  # ID администратора
+
+        # Отправляем запрос администратору
         bot.send_message(
             admin_chat_id,
             f"💳 Запрос на пополнение:\n"
@@ -308,48 +304,72 @@ def handle_text_message_for_top_up(message: Message):
             )
         )
 
-        # Уведомляем пользователя
-        bot.send_message(chat_id, f"✅ Ваш запрос на пополнение на сумму {amount} USDT отправлен администратору. Ожидайте подтверждения.")
+        bot.send_message(chat_id, f"✅ Ваш запрос на пополнение на сумму {amount} USDT отправлен администратору.")
         user_states.pop(chat_id)  # Сбрасываем состояние
 
     except ValueError:
         bot.send_message(chat_id, "⚠️ Введите корректное число (например, 100.50).")
 
-    
-def handle_text_messages(message):
+# 📌 2. Обработчик для установки цены BIN
+@bot.message_handler(commands=['set_price'])
+def set_price(message: Message):
+    chat_id = message.chat.id
+    try:
+        user_input = message.text.split()
+        if len(user_input) != 3:
+            bot.send_message(chat_id, "❌ Используйте формат: /set_price [ID BIN] [Цена]")
+            return
+        
+        bin_id = int(user_input[1])
+        price = float(user_input[2])
+        set_bin_price(bin_id, price)
+        
+        bot.send_message(chat_id, f"✅ Цена {price} $ установлена для BIN с ID {bin_id}.")
+    except ValueError:
+        bot.send_message(chat_id, "⚠️ Неверный формат команды. Используйте: /set_price ID BIN Цена")
+    except Exception as e:
+        bot.send_message(chat_id, f"⚠️ Произошла ошибка: {e}")
+
+# 📌 3. Универсальный обработчик состояний
+@bot.message_handler(func=lambda message: message.chat.id in user_states)
+def handle_state_messages(message: Message):
     chat_id = message.chat.id
     state = user_states.get(chat_id)
 
-    if state:
-        if state == 'awaiting_bin_input':
-            if message.text.isdigit():
-                results = search_by_bin(message.text)
-                if results:
-                    text = "Результаты поиска:\n"
-                    for geo, bin_code in results:
-                        text += f"🌍 {geo}, BIN: {bin_code}\n"
-                else:
-                    text = "❌ Ничего не найдено по указанному BIN."
-
-                bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup().add(
-                    InlineKeyboardButton('🔙 Назад', callback_data='list_items')
-                ))
-                user_states.pop(chat_id)
+    if state == 'awaiting_bin_input':
+        if message.text.isdigit():
+            results = search_by_bin(message.text)
+            if results:
+                text = "📊 Результаты поиска:\n"
+                for geo, bin_code in results:
+                    text += f"🌍 {geo}, BIN: {bin_code}\n"
             else:
-                bot.send_message(chat_id, "⚠️ Введите корректные цифры BIN.")
-        elif state.startswith('awaiting_price_for_'):
-            try:
-                bin_id = int(state.split('_')[-1])
-                price = float(message.text)
-                set_bin_price(bin_id, price)
-                bot.send_message(chat_id, f"✅ Цена для BIN с ID {bin_id} успешно обновлена на {price:.2f}💰.")
-                user_states.pop(chat_id)
-            except ValueError:
-                bot.send_message(chat_id, "⚠️ Укажите корректное число в качестве цены.")
+                text = "❌ Ничего не найдено по указанному BIN."
+            
+            bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup().add(
+                InlineKeyboardButton('🔙 Назад', callback_data='list_items')
+            ))
+            user_states.pop(chat_id)
         else:
-            bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
+            bot.send_message(chat_id, "⚠️ Введите корректные цифры BIN.")
+    
+    elif state.startswith('awaiting_price_for_'):
+        try:
+            bin_id = int(state.split('_')[-1])
+            price = float(message.text)
+            set_bin_price(bin_id, price)
+            bot.send_message(chat_id, f"✅ Цена для BIN с ID {bin_id} успешно обновлена на {price:.2f}💰.")
+            user_states.pop(chat_id)
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ Укажите корректное число в качестве цены.")
     else:
-        bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
+        bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
+        user_states.pop(chat_id)
+
+# 📌 4. Обработчик для неизвестных команд
+@bot.message_handler(func=lambda message: True)
+def handle_unknown_command(message: Message):
+    bot.send_message(message.chat.id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
 
 
 # Функция для обработки подтверждения или отклонения пополнения администратором
@@ -397,7 +417,6 @@ def handle_admin_response(call):
 # Запуск бота
 if __name__ == '__main__':
     while True:
-        initialize_users_table()
         try:
             bot.polling(none_stop=True, interval=2, timeout=60, long_polling_timeout=60)
         except apihelper.ReadTimeout:
