@@ -1,7 +1,7 @@
 # catalogue_loader.py
 import sqlite3
 import time
-
+from oplata import get
 #Добавление колонки цен в базу бинов
 def add_price_column_to_bins():
     # Используйте корректное имя вашей базы данных (замените payments.db, если оно другое)
@@ -165,7 +165,7 @@ def initialize_payments_table():
         conn.commit()
 
 def update_user_balance(user_id, new_balance):
-    conn = sqlite3.connect('payment_info.db')  # Подключение к вашей базе данных
+    conn = sqlite3.connect('payments_info.db')  # Подключение к вашей базе данных
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
     conn.commit()
@@ -394,3 +394,34 @@ def add_price_column_to_bins():
             print(f"Произошла ошибка: {e}")
     finally:
         conn.close()
+    
+# Функция для получения количества товаров по BIN
+def get_items_count_by_bin(bin_id):
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+        
+        # Получаем количество товаров для данного BIN
+        cursor.execute("""
+            SELECT COUNT(*) FROM payments 
+            WHERE number LIKE ? 
+        """, (f"{bin_id}%",))
+        
+        count = cursor.fetchone()[0]  # Извлекаем число из результата запроса
+    return count
+
+def get_items_by_bin(bin_prefix):
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+
+        # Запрос для получения всех записей, где номер карты начинается с указанного BIN
+        cursor.execute("""
+            SELECT payments.id AS payment_id, payments.geo, payments.bank, payments.number, payments.date, payments.cvc, bins.id AS bin_id, bins.price
+            FROM payments
+            JOIN bins ON SUBSTR(payments.number, 1, 6) = bins.bin
+            WHERE bins.bin = ?
+        """, (bin_prefix,))
+        
+        items = cursor.fetchall()
+
+    return items
+
