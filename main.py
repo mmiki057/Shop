@@ -1,9 +1,10 @@
 import telebot
 import time
-from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price
-from user_manager import initialize_user_table, register_user, get_user_profile
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance
+from user_manager import initialize_users_table, register_user, get_user_profile
 from telebot import apihelper
+from telebot.types import Message
 
 apihelper.RETRY_ON_TIMEOUT = True
 apihelper.SESSION_TIMEOUT = 60  # Максимальное время ожидания для одного запроса
@@ -15,17 +16,14 @@ bot = telebot.TeleBot('8053455390:AAGVSy0-_GGX4yaF0J9yHcB8xXM94jBBh3A')
 
 # Словарь для отслеживания состояний пользователей
 user_states = {}
-# Словарь для хранения баланса пользователей (например, в памяти)
+user_top_up_amounts = {}
+pending_confirmations = {}
 user_balances = {}
-
-
-
 # Функция для проверки прав администратора
 def is_admin(user_id):
     admin_ids = [7338415218, 987654321]  # ID администраторов
     return user_id in admin_ids
-
-
+    
 def get_main_menu():
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton('📋 Список карт / Купить', callback_data='list_items'))
@@ -196,9 +194,8 @@ def handle_callback(call: CallbackQuery):
             user_id = call.from_user.id
             user = get_user_profile(user_id)
             if user:
-                username, _, registered_at = user  # Баланс теперь берется из user_balances
-                balance = user_balances.get(user_id, 0)  # Получаем баланс из словаря
-                text = f"👤 Профиль:\nUsername: {username}\nБаланс: {balance:.2f}💰\nДата регистрации: {registered_at}"
+                username, balance, registered_at = user
+                text = f"👤 Профиль:\nUsername: {username}\nБаланс: {balance}💰\nДата регистрации: {registered_at}"
             else:
                 text = "Профиль не найден. Попробуйте перезапустить бота командой /start."
 
@@ -234,7 +231,6 @@ def handle_callback(call: CallbackQuery):
         elif data.startswith('set_price_') or data == 'set_bin_price_menu':
             handle_admin_buttons(call)
         
-        # Проверка, что за кнопка была нажата
         elif data == 'balance':
             handle_balance(call)
         elif data.startswith('network_'):
@@ -295,6 +291,7 @@ def handle_text_message_for_top_up(message: Message):
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной.")
 
+        # Получаем информацию о сети, в которую пользователь хочет пополнить
         network = user_states[chat_id].get('network')
 
         # Отправляем запрос администратору на подтверждение пополнения
@@ -312,65 +309,95 @@ def handle_text_message_for_top_up(message: Message):
         )
 
         # Уведомляем пользователя
-        bot.send_message(chat_id, "✅ Ваш запрос на пополнение отправлен администратору. Ожидайте подтверждения.")
+        bot.send_message(chat_id, f"✅ Ваш запрос на пополнение на сумму {amount} USDT отправлен администратору. Ожидайте подтверждения.")
         user_states.pop(chat_id)  # Сбрасываем состояние
 
     except ValueError:
         bot.send_message(chat_id, "⚠️ Введите корректное число (например, 100.50).")
 
-# Функция для обработки подтверждения или отклонения пополнения администратором
-@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_') or call.data.startswith('reject_'))
-def handle_admin_response(call: CallbackQuery):
-    data = call.data
-    if data.startswith('approve_'):
-        _, user_chat_id, amount = data.split('_')
-        user_chat_id = int(user_chat_id)
-        amount = float(amount)
-        if user_chat_id in user_balances:
-            user_balances[user_chat_id] += amount
-        else:
-            user_balances[user_chat_id] = amount
-
-        # Уведомляем пользователя о подтверждении
-        bot.send_message(user_chat_id, f"✅ Ваш запрос на пополнение {amount} USDT подтвержден администратором.")
-        bot.send_message(call.message.chat.id, "✅ Запрос на пополнение успешно подтвержден.")
-    elif data.startswith('reject_'):
-        _, user_chat_id = data.split('_')
-        user_chat_id = int(user_chat_id)
-
-        # Уведомляем пользователя о отклонении
-        bot.send_message(user_chat_id, "❌ Ваш запрос на пополнение был отклонен администратором.")
-        bot.send_message(call.message.chat.id, "❌ Запрос на пополнение успешно отклонен.")
-
-# Функция для обработки текстовых сообщений с запросами, связанными с состоянием
-@bot.message_handler(func=lambda message: user_states.get(message.chat.id) and user_states[message.chat.id]['state'] == 'awaiting_top_up_amount')
-def handle_text_messages(message: Message):
+    
+def handle_text_messages(message):
     chat_id = message.chat.id
     state = user_states.get(chat_id)
 
     if state:
-        if state['state'].startswith('awaiting_top_up_amount'):
+        if state == 'awaiting_bin_input':
+            if message.text.isdigit():
+                results = search_by_bin(message.text)
+                if results:
+                    text = "Результаты поиска:\n"
+                    for geo, bin_code in results:
+                        text += f"🌍 {geo}, BIN: {bin_code}\n"
+                else:
+                    text = "❌ Ничего не найдено по указанному BIN."
+
+                bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton('🔙 Назад', callback_data='list_items')
+                ))
+                user_states.pop(chat_id)
+            else:
+                bot.send_message(chat_id, "⚠️ Введите корректные цифры BIN.")
+        elif state.startswith('awaiting_price_for_'):
             try:
-                amount = float(message.text)
-                if amount <= 0:
-                    raise ValueError("Сумма должна быть положительной.")
-
-                network = state['network']
-                # Дальше обработка пополнения
-                bot.send_message(chat_id, f"Вы успешно запросили пополнение на сумму {amount} USDT в сети {network}. Ожидайте подтверждения.")
-
-                # Сбрасываем состояние
+                bin_id = int(state.split('_')[-1])
+                price = float(message.text)
+                set_bin_price(bin_id, price)
+                bot.send_message(chat_id, f"✅ Цена для BIN с ID {bin_id} успешно обновлена на {price:.2f}💰.")
                 user_states.pop(chat_id)
             except ValueError:
-                bot.send_message(chat_id, "⚠️ Введите корректную сумму пополнения.")
+                bot.send_message(chat_id, "⚠️ Укажите корректное число в качестве цены.")
         else:
-            bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
+            bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
     else:
         bot.send_message(chat_id, "⚠️ Неизвестная команда. Используйте /start для возврата в главное меню.")
+
+
+# Функция для обработки подтверждения или отклонения пополнения администратором
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'reject_')))
+def handle_admin_response(call):
+    try:
+        data = call.data
+        if data.startswith('approve_'):
+            _, user_chat_id, amount = data.split('_')
+            user_chat_id = int(user_chat_id)
+            amount = float(amount)
+
+            # Обновляем баланс пользователя в базе данных
+            current_balance = get_user_balance(user_chat_id)
+            if current_balance is None:
+                bot.send_message(call.message.chat.id, f"❌ Пользователь с ID {user_chat_id} не найден в базе данных.")
+                return
+
+            new_balance = current_balance + amount
+            update_user_balance(user_chat_id, new_balance)
+
+            # Уведомляем пользователя
+            bot.send_message(
+                user_chat_id,
+                f"✅ Ваш запрос на пополнение на сумму {amount} USDT подтвержден администратором. Ваш новый баланс: {new_balance} USDT."
+            )
+            bot.send_message(call.message.chat.id, "✅ Запрос на пополнение успешно подтвержден.")
+
+        elif data.startswith('reject_'):
+            _, user_chat_id = data.split('_')
+            user_chat_id = int(user_chat_id)
+
+            # Уведомляем пользователя об отклонении
+            bot.send_message(user_chat_id, "❌ Ваш запрос на пополнение был отклонен администратором.")
+            bot.send_message(call.message.chat.id, "❌ Запрос на пополнение успешно отклонен.")
+
+        else:
+            bot.send_message(call.message.chat.id, "❌ Неизвестная команда.")
+    except ValueError as e:
+        bot.send_message(call.message.chat.id, f"❌ Произошла ошибка обработки данных: {e}")
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Произошла ошибка: {e}")
+
 
 # Запуск бота
 if __name__ == '__main__':
     while True:
+        initialize_users_table()
         try:
             bot.polling(none_stop=True, interval=2, timeout=60, long_polling_timeout=60)
         except apihelper.ReadTimeout:
