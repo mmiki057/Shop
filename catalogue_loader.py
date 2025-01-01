@@ -2,6 +2,7 @@
 import sqlite3
 import time
 from oplata import get
+import datetime
 #Добавление колонки цен в базу бинов
 def add_price_column_to_bins():
     # Используйте корректное имя вашей базы данных (замените payments.db, если оно другое)
@@ -23,11 +24,11 @@ def add_price_column_to_bins():
         conn.close()
 
 # Функция проверки уникальности данных
-def is_payment_info_unique(geo, bank, number, date, cvc):
+def is_payment_info_unique(geo, bank, number, date, code):
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM payments WHERE geo = ? AND bank = ? AND number = ? AND date = ? AND cvc = ?", 
-                       (geo, bank, number, date, cvc))
+        cursor.execute("SELECT * FROM items WHERE geo = ? AND bank = ? AND number = ? AND date = ? AND code = ?", 
+                       (geo, bank, number, date, code))
         record = cursor.fetchone()
     return record is None
 
@@ -43,15 +44,15 @@ def load_payment_info_from_file():
             records = content.split(";")
 
             for record in records:
+                print(record)
                 try:
-                    geo, bank, number, date, cvc = record.split(",")
+                    geo, bank, number, date, code = record.split(",")
                     bin_code = number[:6]  # Первые шесть цифр номера карты
 
                     # Проверяем наличие BIN'а в таблице bins
                     cursor.execute("SELECT id FROM bins WHERE bin = ?", (bin_code,))
                     bin_row = cursor.fetchone()
                     if not bin_row:
-                        # Если BIN еще не существует, добавляем его
                         cursor.execute("INSERT INTO bins (bin) VALUES (?)", (bin_code,))
                         conn.commit()
                         bin_id = cursor.lastrowid
@@ -59,19 +60,22 @@ def load_payment_info_from_file():
                     else:
                         bin_id = bin_row[0]
 
-                    # Проверяем уникальность записи в payments
+                    # Проверяем уникальность записи в items
                     cursor.execute("""
-                    SELECT * FROM payments WHERE geo = ? AND bank = ? AND number = ? AND date = ? AND cvc = ?
-                    """, (geo, bank, number, date, cvc))
+                        SELECT * FROM items 
+                        WHERE geo = ? AND bank = ? AND number = ? AND date = ? AND code = ? AND bin = ?
+                    """, (geo, bank, number, date, code, bin_code))
+
                     if not cursor.fetchone():
                         cursor.execute("""
-                        INSERT INTO payments (geo, bank, number, date, cvc)
-                        VALUES (?, ?, ?, ?, ?)
-                        """, (geo, bank, number, date, cvc))
+                            INSERT INTO items (geo, bank, number, date, code, bin) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (geo, bank, number, date, code, bin_code))
                         conn.commit()
-                        print(f"Запись для номера карты {number} успешно добавлена!")
+                        print(f"✅ Запись для номера карты {number} с BIN {bin_code} успешно добавлена!")
                     else:
-                        print(f"Запись для номера карты {number} уже существует!")
+                        print(f"ℹ️ Запись для номера карты {number} с BIN {bin_code} уже существует!")
+
                 except ValueError:
                     print(f"Ошибка при обработке записи: {record}")
     except FileNotFoundError:
@@ -83,7 +87,7 @@ def load_payment_info_from_file():
 def get_unique_geos():
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT geo FROM payments")
+        cursor.execute("SELECT DISTINCT geo FROM items")
         geos = [row[0] for row in cursor.fetchall()]
     return geos
 
@@ -117,8 +121,8 @@ def search_by_bin(bin_prefix):
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, geo, bank, number, date, cvc, price 
-            FROM payments 
+            SELECT id, geo, bank, number, date, cvc
+            FROM items 
             WHERE number LIKE ?
         """, (f"{bin_prefix}%",))
         records = cursor.fetchall()
@@ -128,7 +132,7 @@ def search_by_bin(bin_prefix):
 def search_by_geo(geo):
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT geo, SUBSTR(number, 1, 6) as bin FROM payments WHERE geo = ?", (geo,))
+        cursor.execute("SELECT geo, SUBSTR(number, 1, 6) as bin FROM items WHERE geo = ?", (geo,))
         records = cursor.fetchall()
     return records
 
@@ -226,12 +230,12 @@ def buy_card(user_id, search_type, search_value, price):
         # Выбираем карту для покупки
         if search_type == "bin":
             cursor.execute(
-                "SELECT id, geo, bank, number, date, cvc FROM payments WHERE number LIKE ? LIMIT 1",
+                "SELECT id, geo, bank, number, date, cvc FROM items WHERE number LIKE ? LIMIT 1",
                 (f"{search_value}%",)
             )
         elif search_type == "geo":
             cursor.execute(
-                "SELECT id, geo, bank, number, date, cvc FROM payments WHERE geo = ? LIMIT 1",
+                "SELECT id, geo, bank, number, date, cvc FROM items WHERE geo = ? LIMIT 1",
                 (search_value,)
             )
         else:
@@ -284,27 +288,24 @@ def check_table_structure():
             print(column)
         
 def get_item_by_id(item_id):
-
-    """
-    Функция для получения информации о товаре (карте) по его ID.
-
-    :param item_id: ID товара (или карты)
-    :return: Словарь с информацией о карте или None, если карта не найдена
-    """
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
 
-        # Извлекаем информацию о карте по ID
+        print(f"Запрос на получение товара с ID: {item_id}")  # Логируем запрос
         cursor.execute("""
             SELECT payments.id, payments.geo, payments.bank, payments.number, payments.date, payments.cvc, bins.price
             FROM payments
             JOIN bins ON SUBSTR(payments.number, 1, 6) = bins.bin
-            WHERE payments.id = ?
+            WHERE payments.id = ? 
         """, (item_id,))
         item = cursor.fetchone()
 
+        if item:
+            print(f"Найден товар: {item}")
+        else:
+            print("Товар не найден.")
+
     if item:
-        # Возвращаем данные о карте в виде словаря
         return {
             'id': item[0],
             'geo': item[1],
@@ -316,6 +317,7 @@ def get_item_by_id(item_id):
         }
     else:
         return None
+
     
 def get_user_balance(user_id):
     """
@@ -362,7 +364,7 @@ def proceed_with_purchase(user_id, item):
         )
 
         # Удаляем карту из базы (или помечаем её как купленную)
-        cursor.execute("DELETE FROM payments WHERE id = ?", (item['id'],))
+        cursor.execute("DELETE FROM items WHERE id = ?", (item['id'],))
 
         conn.commit()
 
@@ -396,32 +398,249 @@ def add_price_column_to_bins():
         conn.close()
     
 # Функция для получения количества товаров по BIN
-def get_items_count_by_bin(bin_id):
+def get_items_count_by_bin(bin_prefix):
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
-        
-        # Получаем количество товаров для данного BIN
+
+        # Логируем запрос для отладки
+        print(f"Запрос на получение количества товаров для BIN: {bin_prefix}")
+
         cursor.execute("""
-            SELECT COUNT(*) FROM payments 
-            WHERE number LIKE ? 
-        """, (f"{bin_id}%",))
-        
-        count = cursor.fetchone()[0]  # Извлекаем число из результата запроса
+            SELECT COUNT(*) 
+            FROM items
+            WHERE bin LIKE ?
+        """, (f"{bin_prefix}%",))
+
+        count = cursor.fetchone()[0]  # Получаем первое значение из результата
+        print(f"Найдено {count} единиц товаров для BIN {bin_prefix}")  # Логируем результат
+
     return count
 
+def get_bins_data():
+    """
+    Извлекает BIN, ID и Price из таблицы bins.
+    """
+    try:
+        # Подключаемся к базе данных
+        with sqlite3.connect('payment_info.db') as conn:
+            cursor = conn.cursor()
+
+            # Выполняем запрос
+            cursor.execute("SELECT id, bin, price FROM bins")
+            bins_data = cursor.fetchall()
+
+            # Форматируем вывод
+            result = [{"id": row[0], "bin": row[1], "price": row[2]} for row in bins_data]
+            return result
+    except sqlite3.Error as e:
+        print(f"Ошибка базы данных: {e}")
+        return []
+
+# load_payment_info_from_file()
+# get_items_count_by_bin(444111)
+
 def get_items_by_bin(bin_prefix):
+    """
+    Получает список записей из таблицы items по указанному BIN-префиксу.
+    """
     with sqlite3.connect('payment_info.db') as conn:
         cursor = conn.cursor()
 
-        # Запрос для получения всех записей, где номер карты начинается с указанного BIN
+        # Логируем запрос для отладки
+        print(f"Запрос для BIN-префикса: {bin_prefix}")
+
+        # Выполняем запрос, чтобы найти записи из таблицы items, которые соответствуют BIN-префиксу
         cursor.execute("""
-            SELECT payments.id AS payment_id, payments.geo, payments.bank, payments.number, payments.date, payments.cvc, bins.id AS bin_id, bins.price
+            SELECT i.id, i.geo, i.bank, i.number, i.date, i.code, b.price 
+            FROM items i
+            JOIN bins b ON i.bin = b.bin
+            WHERE b.bin LIKE ?
+        """, (f"{bin_prefix}%",))
+
+        items = cursor.fetchall()
+
+        print(f"Найдено {len(items)} записей для BIN-префикса {bin_prefix}")  # Лог результата
+
+    # Формируем список словарей с результатами
+    return [
+        {
+            "id": item[0],
+            "geo": item[1],
+            "bank": item[2],
+            "number": item[3],
+            "date": item[4],
+            "code": item[5],
+            "price": item[6]
+        }
+        for item in items
+    ]
+
+
+connection = sqlite3.connect('payment_info.db')  # Укажите путь к вашей базе данных
+cursor = connection.cursor()
+
+# Создание таблицы, если она не существует
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    geo TEXT,
+    bank TEXT,
+    number TEXT,
+    date TEXT,
+    code TEXT,
+    price INTEGER,
+    bin INTEGER
+);
+''')
+
+# Сохраняем изменения и закрываем соединение
+connection.commit()
+connection.close()
+
+def check_payments_data():
+    # Подключаемся к базе данных
+    conn = sqlite3.connect('payment_info.db')
+    cursor = conn.cursor()
+    
+    # Запрос на получение первых 10 записей из таблицы payments
+    cursor.execute("SELECT id, number FROM payments LIMIT 10;")
+    records = cursor.fetchall()
+    
+    # Печатаем результат
+    print("Данные о первых 10 записях:")
+    for record in records:
+        print(record)
+    
+    conn.close()
+
+def check_bin_match(bin_id):
+    # Подключаемся к базе данных
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+        
+        # Получаем все записи из таблицы bins для указанного bin_id
+        cursor.execute("SELECT bin, price FROM bins WHERE id = ?", (bin_id,))
+        bin_row = cursor.fetchone()
+
+        # Если BIN не найден в таблице bins
+        if not bin_row:
+            return f"BIN с ID {bin_id} не найден."
+
+        bin_value, bin_price = bin_row
+        print(f"Проверка BIN: {bin_value}, Цена: {bin_price}")
+
+        # Выполняем запрос для поиска карт с этим BIN в таблице payments
+        cursor.execute("""
+            SELECT payments.id, payments.number, bins.bin, bins.price
             FROM payments
             JOIN bins ON SUBSTR(payments.number, 1, 6) = bins.bin
             WHERE bins.bin = ?
-        """, (bin_prefix,))
+        """, (bin_value,))
+        
+        # Извлекаем все найденные записи
+        items = cursor.fetchall()
+        
+        if items:
+            print("Найденные товары для BIN:")
+            for item in items:
+                print(f"ID: {item[0]}, Номер карты: {item[1]}, BIN: {item[2]}, Цена: {item[3]}")
+        else:
+            return f"Товары с BIN {bin_value} не найдены."
+        
+def check_item_availability(bin_code):
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+
+        # Логирование, чтобы убедиться, что передаем правильный BIN
+        print(f"Проверяем наличие товара для BIN: {bin_code}")
+
+        # Ищем товары по BIN
+        cursor.execute("""
+            SELECT payments.id AS payment_id, payments.number, bins.bin, bins.price
+            FROM payments
+            JOIN bins ON SUBSTR(payments.number, 1, 6) = bins.bin
+            WHERE bins.bin = ?
+        """, (bin_code,))
         
         items = cursor.fetchall()
 
-    return items
+        # Логируем найденные товары
+        if items:
+            print("Найденные товары для BIN:")
+            for item in items:
+                print(f"ID: {item[0]}, Номер карты: {item[1]}, BIN: {item[2]}, Цена: {item[3]}")
+        else:
+            print("Товары для BIN не найдены.")
 
+        # Проверяем наличие товара с ценой > 0
+        available_items = [item for item in items if item[3] > 0]
+        if available_items:
+            print(f"Найдено {len(available_items)} товаров с ценой больше 0.")
+            return True  # Есть товары с ценой
+        else:
+            print("Товары с ценой больше 0 не найдены.")
+            return False  # Нет товаров с ценой больше 0
+        
+# Создание таблицы sold_items
+def create_sold_items_table():
+    """Создает таблицу для проданных карт."""
+    with sqlite3.connect('payment_info.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sold_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                geo TEXT NOT NULL,
+                bank_name TEXT NOT NULL,
+                number TEXT NOT NULL,
+                date TEXT NOT NULL,
+                cvc TEXT NOT NULL,
+                sold_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        print("✅ Таблица 'sold_items' успешно создана!")
+
+# Добавление карты в таблицу sold_items и удаление из items
+def sell_item(item_id):
+    """
+    Переносит карту из таблицы 'items' в таблицу 'sold_items' и удаляет из 'items'.
+    """
+    try:
+        conn = sqlite3.connect('payment_info.db')
+        cursor = conn.cursor()
+
+        # Получаем данные о товаре из таблицы items
+        cursor.execute("""
+            SELECT geo, bank, number, date, code 
+            FROM items 
+            WHERE id = ?
+        """, (item_id,))
+        item = cursor.fetchone()
+
+        if not item:
+            print(f"❌ Карта с ID {item_id} не найдена в каталоге.")
+            return
+
+        geo, bank, number, date, code = item
+
+        # Переносим запись в sold_items
+        cursor.execute("""
+            INSERT INTO sold_items (geo, bank_name, number, date, cvc, sold_date) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (geo, bank, number, date, code, ))
+
+        # Удаляем запись из items
+        cursor.execute("""
+            DELETE FROM items WHERE id = ?
+        """, (item_id,))
+
+        conn.commit()
+        print(f"✅ Карта с ID {item_id} успешно продана и удалена из каталога.")
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка при обработке покупки: {e}")
+    finally:
+        conn.close()
+
+initialize_bins_table()
+initialize_payments_table()
