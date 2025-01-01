@@ -1,19 +1,22 @@
 import telebot
 import time
+import logging
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins, get_items_count_by_bin, get_items_by_bin
+from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, get_bins_data, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins, get_items_count_by_bin, get_items_by_bin, check_table_structure, sell_item
 from user_manager import initialize_users_table, register_user, get_user_profile
 from telebot import apihelper
+from telebot.apihelper import READ_TIMEOUT
 from telebot.types import Message
 from oplata import get_item_details, get_item_price, purchase_item
 
 apihelper.RETRY_ON_TIMEOUT = True
-apihelper.SESSION_TIMEOUT = 60  # Максимальное время ожидания для одного запроса
-apihelper.READ_TIMEOUT = 60     # Время ожидания чтения данных
-apihelper.CONNECT_TIMEOUT = 60  # Время ожидания подключения
+apihelper.SESSION_TIMEOUT = 100  # Максимальное время ожидания для одного запроса
+apihelper.READ_TIMEOUT = 100     # Время ожидания чтения данных
+apihelper.CONNECT_TIMEOUT = 100  # Время ожидания подключения
 
 # Создаем бота
-bot = telebot.TeleBot('8053455390:AAGVSy0-_GGX4yaF0J9yHcB8xXM94jBBh3A')
+bot = telebot.TeleBot('7472173238:AAGZw44_U-aRtj7pyyGdpt6xq4YE7efuLIs')
+# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Словарь для отслеживания состояний пользователей
 user_states = {}
@@ -22,7 +25,7 @@ pending_confirmations = {}
 user_balances = {}
 # Функция для проверки прав администратора
 def is_admin(user_id):
-    admin_ids = [7338415218, 987654321]  # ID администраторов
+    admin_ids = [7338415218, 7346551427]  # ID администраторов
     return user_id in admin_ids
 
 def handle_purchase(user_id, item_id):
@@ -38,7 +41,7 @@ def handle_purchase(user_id, item_id):
             f"🏦 Банк: {bank}\n"
             f"🔢 Номер: {number}\n"
             f"📅 Дата: {date}\n"
-            f"🔑 Код: {code}"
+            f"🔑 CVC: {code}"
         )
         bot.send_message(user_id, message)
     else:
@@ -118,7 +121,7 @@ def handle_callback(call: CallbackQuery):
             keyboard = InlineKeyboardMarkup()
             keyboard.add(InlineKeyboardButton('Бины', callback_data='bins'))
             keyboard.add(InlineKeyboardButton('🌍 Гео', callback_data='geo'))
-            keyboard.add(InlineKeyboardButton('🔍 Поиск по BIN', callback_data='search_bin'))
+            #keyboard.add(InlineKeyboardButton('🔍 Поиск по BIN', callback_data='search_bin'))
             keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
 
             bot.edit_message_text(
@@ -160,7 +163,7 @@ def handle_callback(call: CallbackQuery):
             bins = get_unique_bins()
             keyboard = InlineKeyboardMarkup()
             for bin_id, bin_code, price in bins:
-                keyboard.add(InlineKeyboardButton(f"{bin_code} - {price}", callback_data=f'bin_{bin_id}'))
+                keyboard.add(InlineKeyboardButton(f"BIN: {bin_code}, Price: {price} USDT", callback_data=f'bin_{bin_code}'))
             keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
 
             bot.edit_message_text(
@@ -171,55 +174,131 @@ def handle_callback(call: CallbackQuery):
             )
 
         elif data.startswith('bin_'):
-            bin_id = data.split('_')[1]
-            # Получаем количество товаров с данным BIN
-            items_count = get_items_count_by_bin(bin_id)
-            
-            # Получаем список товаров с данным BIN
-            items = get_items_by_bin(bin_id)
-            
-            # Формируем сообщение с количеством товаров и кнопкой "Купить"
-            text = f"Вы выбрали BIN: {bin_id}\n" \
-                f"Количество товаров с этим BIN: {items_count}\n" \
-                "Выберите товар для покупки:"
-            
-            # Кнопки для каждого товара
-            keyboard = InlineKeyboardMarkup()
-            for item in items:
-                item_name = item['name']
-                item_price = item['price']
-                item_id = item['id']
-                keyboard.add(InlineKeyboardButton(f"{item_name} - {item_price}", callback_data=f'buy_{item_id}'))
-            
-            # Добавляем кнопку "Купить"
-            keyboard.add(InlineKeyboardButton('Купить', callback_data=f'buy_{bin_id}'))
-            
-            # Кнопка "Назад"
-            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='bins'))
+            try:
+                bin_code = data.split('_')[1]
+                # Получаем количество товаров с данным BIN
+                items_count = get_items_count_by_bin(bin_code)
 
-            bot.edit_message_text(
-                text=text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=keyboard
-            )
+                # Получаем список товаров с данным BIN
+                print('items count -', items_count)
+                items = get_items_by_bin(bin_code)
+                
+                print(items)
 
-        elif data.startswith('buy_'):
-            # Логика для покупки товара
-            if data.split('_')[0] == 'buy':
-                # Если покупаем товар
-                item_id = data.split('_')[1]
-                purchase_item(item_id)
+                # Формируем сообщение с количеством товаров и кнопкой "Купить"
+                text = f"Вы выбрали BIN: {bin_code}\n\n" \
+                    f"Количество товаров с этим BIN: {items_count}\n\n" \
+                    "Для покупки товара с данным BIN нажмите \"Купить\"" if items_count > 0 else "Извините, товара нет в наличии."
+
+                # Кнопки для каждого товара
+                keyboard = InlineKeyboardMarkup()
+                if items_count > 0:
+                    for item in items:
+                        print('item - ', item)
+                        item_id = item['id']  # ID товара
+                        item_number = item['number']  # Номер карты
+                        item_price = item['price']  # Цена товара
+                        #keyboard.add(InlineKeyboardButton(f"{item_number} - {item_price} USDT", callback_data=f'buy_{item_id}'))
+
+                    # Добавляем кнопку "Купить"
+                    keyboard.add(InlineKeyboardButton('Купить', callback_data=f'buy_{bin_code}'))
+                
+                # Кнопка "Назад"
+                keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='bins'))
+
                 bot.edit_message_text(
-                    text="Вы успешно купили товар!",
+                    text=text,
                     chat_id=call.message.chat.id,
                     message_id=call.message.message_id,
-                    reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
+                    reply_markup=keyboard
                 )
+            
+            except Exception as e:
+                print(e)
+
+
+        elif data.startswith('buy_'):
+            try:
+                
+                bin_code = str(data.split('_')[1])
+                
+                bins_data = get_bins_data()
+                print(bins_data)
+                
+                filtered_bin = next((bin_item for bin_item in bins_data if bin_item['bin'] == bin_code), None)
+
+                if filtered_bin:
+                    print(f"Найден BIN: {filtered_bin}")
+                else:
+                    print(f"BIN с кодом {bin_code} не найден.")
+                
+                
+                # Получаем баланс пользователя
+                user_balance = get_user_balance(user_id)
+                print(f"Баланс пользователя: {user_balance}")
+                
+                if user_balance is None:
+                    print(f"Ошибка: не удалось получить баланс для пользователя {user_id}")
+                    bot.send_message(user_id, "❌ Ошибка: не удалось получить баланс.")
+                    return
+
+                # Получаем цену товара
+                item_price = filtered_bin['price']
+                print(f"Цена товара: {item_price}")
+
+                if item_price is None:
+                    print(f"Ошибка: не удалось получить цену для товара {bin_code}")
+                    bot.send_message(user_id, "❌ Ошибка: не удалось получить цену товара.")
+                    return
+
+                # Проверяем, хватает ли средств на балансе
+                if user_balance >= item_price:
+                    # Списываем средства
+                    new_balance = user_balance - item_price
+                    update_user_balance(user_id, new_balance)
+                    print(f"Новый баланс: {new_balance}")
+                    
+                    # Получаем полную информацию о товаре
+                    items_details = get_item_details(filtered_bin['bin'])  # Используем функцию для получения списка товаров
+                    print(f"Данные товаров: {items_details}")
+
+                    if items_details:
+                          # ID товара
+                        # Формируем сообщение для каждого товара
+                        geo = items_details['geo']
+                        bank = items_details['bank']
+                        number = items_details['number']
+                        date = items_details['date']
+                        code = items_details['code']
+                        #id = items_details['id'] # ??????????????????????????????????????????????????????????????
+                        
+                        message = (
+                            f"✅ Покупка успешно завершена!\n\n"
+                            f"📌 Информация о товаре:\n"
+                            f"🌍 Гео: {geo}\n"
+                            f"🏦 Банк: {bank}\n"
+                            f"🔢 Номер: {number}\n"
+                            f"📅 Дата: {date}\n"
+                            f"🔑 CVC: {code}"
+                        )
+                        #bot.send_message(user_id, message) #????????????????????????????????????????????????????
+                        sell_item(item_id)
+                        
+                    else:
+                        print(f"Ошибка: данные товаров не найдены для BIN {filtered_bin['bin']}")
+                        bot.send_message(user_id, "❌ Ошибка: товары не найдены для данного BIN.")
+                else:
+                    logging.warning(f"Недостаточно средств для покупки. Баланс: {user_balance}, Цена товара: {item_price}")
+                    bot.send_message(user_id, "❌ Недостаточно средств на балансе для покупки.")
+            
+            except Exception as e:
+                logging.error(f"Произошла ошибка при обработке покупки: {str(e)}")
+                bot.send_message(user_id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
+
 
         elif data == 'search_bin':
             bot.edit_message_text(
-                text="Введите первые 7 или 8 цифр BIN для поиска:",
+                text="Введите первые 6 цифр BIN для поиска:",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
@@ -310,7 +389,7 @@ def handle_callback(call: CallbackQuery):
 
     except Exception as e:
         print(f"[ERROR] Ошибка в обработке команды: {e}")
-        bot.send_message(call.message.chat.id, "⚠️ Произошла ошибка. Пожалуйста, повторите попытку.")
+        bot.send_message(call.message.chat.id, f"⚠️ Произошла ошибка. Пожалуйста, повторите попытку.{e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == 'balance')
 def handle_balance(call: CallbackQuery):
@@ -375,7 +454,7 @@ def handle_text_message_for_top_up(message: Message):
             )
         )
 
-        bot.send_message(chat_id, f"✅ Ваш запрос на пополнение на сумму {amount} USDT отправлен администратору.")
+        bot.send_message(chat_id, f"✅ Ваш запрос на пополнение на сумму {amount} USDT отправлен администратору для подтверждения.\n\n Время ожидания составит до 10 минут")
         user_states.pop(chat_id)  # Сбрасываем состояние
 
     except ValueError:
@@ -487,6 +566,7 @@ def handle_admin_response(call):
 
 # Запуск бота
 if __name__ == '__main__':
+    load_payment_info_from_file()
     while True:
         try:
             bot.polling(none_stop=True, interval=2, timeout=60, long_polling_timeout=60)
