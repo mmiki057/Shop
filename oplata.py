@@ -1,31 +1,42 @@
 import sqlite3
 
-def get_item_details(item_id):
-    # Соединение с базой данных (здесь используется SQLite как пример)
+def get_item_details(bin_code):
+    """
+    Получает список записей из таблицы items по указанному BIN-коду.
+    """
+    # Соединение с базой данных
     conn = sqlite3.connect('payment_info.db')  # Укажите путь к вашей базе данных
     cursor = conn.cursor()
     
-    # Запрос для получения данных о товаре по item_id
-    cursor.execute("SELECT geo, bank, number, expiry_date, code FROM items WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-    
-    conn.close()
+    try:
+        # Запрос для получения данных о товарах по BIN-коду
+        cursor.execute("""
+            SELECT geo, bank, number, date, code, id 
+            FROM items 
+            WHERE bin = ?
+        """, (bin_code,))
+        items = cursor.fetchall()
 
-    if item:
-        # Преобразуем кортеж в словарь
-        return {
-            "geo": item[0],
-            "bank": item[1],
-            "number": item[2],
-            "expiry_date": item[3],
-            "code": item[4],
-        }
-    else:
-        return None
+        # Преобразуем список кортежей в список словарей
+        result = [
+            {
+                "geo": item[0],
+                "bank": item[1],
+                "number": item[2],
+                "date": item[3],
+                "code": item[4],
+                "id": item[5]
+            }
+            for item in items
+        ]
+
+        return result[0]
+    finally:
+        conn.close()
     
 def get_item_price(item_id):
     # Соединение с базой данных (укажите путь к вашей базе данных)
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('payment_info.db')
     cursor = conn.cursor()
 
     # Запрос для получения цены товара по item_id
