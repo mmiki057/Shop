@@ -583,35 +583,71 @@ def check_item_availability(bin_code):
         
 # Создание таблицы sold_items
 def create_sold_items_table():
-    """Создает таблицу для проданных карт."""
-    with sqlite3.connect('payment_info.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sold_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                geo TEXT NOT NULL,
-                bank_name TEXT NOT NULL,
-                number TEXT NOT NULL,
-                date TEXT NOT NULL,
-                cvc TEXT NOT NULL,
-                sold_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
-        print("✅ Таблица 'sold_items' успешно создана!")
+   """Создает таблицу для проданных карт."""
+   with sqlite3.connect('payment_info.db') as conn:
+       cursor = conn.cursor()
+       cursor.execute('''
+           CREATE TABLE if not exists sold_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, -- Уникальный идентификатор записи
+                card_number TEXT NOT NULL,           -- Номер карты
+                expiration_date TEXT NOT NULL,       -- Срок действия карты (месяц/год)
+                cvv TEXT NOT NULL,                   -- CVV код
+                sale_date TEXT NOT NULL,             -- Дата продажи (формат YYYY-MM-DD)
+                sale_price REAL NOT NULL             -- Цена продажи
+            );
+       ''')
+       conn.commit()
+       print("✅ Таблица 'sold_items' успешно создана!")
 
-# Добавление карты в таблицу sold_items и удаление из items
+
+#Добавление карты в таблицу sold_items и удаление из items
+# def sell_item(item_id):
+#    """
+#    Удаляет карту из таблицы 'items'.
+#    """
+#    try:
+#        conn = sqlite3.connect('payment_info.db')
+#        cursor = conn.cursor()#
+
+#        # Проверяем, существует ли товар в таблице items
+#        cursor.execute("""
+#           SELECT id 
+#            FROM items 
+#            WHERE id = ?
+#        """, (item_id,))
+#        item = cursor.fetchone()#
+
+#        if not item:
+#            print(f"❌ Карта с ID {item_id} не найдена в каталоге.")
+#            return#
+
+# #        Удаляем запись из items
+#        cursor.execute("""
+#            DELETE FROM items WHERE id = ?
+#        """, (item_id,))
+
+#        conn.commit()
+#        print(f"✅ Карта с ID {item_id} успешно удалена из каталога.")
+
+#    except sqlite3.Error as e:
+#        print(f"❌ Ошибка при удалении карты: {e}")
+#    finally:
+#        conn.close()
+
 def sell_item(item_id):
     """
-    Переносит карту из таблицы 'items' в таблицу 'sold_items' и удаляет из 'items'.
+    Переносит карту из таблицы 'items' в таблицу 'sold_items' и удаляет из 'items', включая цену из таблицы 'bins'.
     """
     try:
         conn = sqlite3.connect('payment_info.db')
         cursor = conn.cursor()
 
+        # Инициализация таблицы sold_items, если её нет
+        create_sold_items_table()
+
         # Получаем данные о товаре из таблицы items
         cursor.execute("""
-            SELECT geo, bank, number, date, code 
+            SELECT number, date, code 
             FROM items 
             WHERE id = ?
         """, (item_id,))
@@ -621,13 +657,22 @@ def sell_item(item_id):
             print(f"❌ Карта с ID {item_id} не найдена в каталоге.")
             return
 
-        geo, bank, number, date, code = item
+        number, date, code = item
+
+        # Получаем цену из таблицы bins
+        cursor.execute("""
+            SELECT price 
+            FROM bins 
+            WHERE id = ?
+        """, (item_id,))
+        bin_row = cursor.fetchone()
+        price = bin_row[0] if bin_row else 0.0
 
         # Переносим запись в sold_items
         cursor.execute("""
-            INSERT INTO sold_items (geo, bank_name, number, date, cvc, sold_date) 
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (geo, bank, number, date, code, ))
+            INSERT INTO sold_items (card_number, expiration_date, cvv, sale_date, sale_price) 
+            VALUES (?, ?, ?, datetime('now'), ?)
+        """, (number, date, code, price))
 
         # Удаляем запись из items
         cursor.execute("""
