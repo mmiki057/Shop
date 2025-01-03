@@ -149,15 +149,24 @@ def handle_callback(call: CallbackQuery):
             geo = data.split('_')[1]
             results = search_by_geo(geo)
             text = "Результаты поиска:\n"
+            keyboard = InlineKeyboardMarkup()
+            
             for geo, bin_code in results:
-                text += f"🌍 {geo}, BIN: {bin_code}\n"
+                text += f"{geo} {bin_code}\n"
+                keyboard.add(InlineKeyboardButton(
+                    f"Купить {bin_code}",
+                    callback_data=f'buy_{bin_code}'
+                ))
+            
+            keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='geo'))
 
             bot.edit_message_text(
                 text=text,
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='geo'))
+                reply_markup=keyboard
             )
+
         
         elif data == 'bins':
             bins = get_unique_bins()
@@ -364,8 +373,10 @@ def handle_callback(call: CallbackQuery):
         
         elif data == 'balance':
             handle_balance(call)
+
         elif data.startswith('network_'):
             handle_network_selection(call)
+            
         elif data.startswith('approve_') or data.startswith('reject_'):
             handle_admin_response(call)
         
