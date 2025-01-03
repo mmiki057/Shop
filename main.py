@@ -597,6 +597,15 @@ def handle_admin_response(call):
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
+    user_id = message.from_user.id
+    
+    # Проверка прав администратора
+    if not is_admin(user_id):
+        bot.send_message(
+            message.chat.id,
+            "❌ У вас нет прав для отправки и обработки документов."
+        )
+        return
     try:
         # Проверяем имя файла
         file_info = bot.get_file(message.document.file_id)
@@ -667,7 +676,7 @@ def handle_document(message):
 
 # Запуск бота
 if __name__ == '__main__':
-    load_payment_info_from_file()
+    #load_payment_info_from_file()
     while True:
         try:
             bot.polling(none_stop=True, interval=2, timeout=60, long_polling_timeout=60)
