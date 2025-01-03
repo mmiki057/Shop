@@ -1,6 +1,8 @@
 import telebot
 import time
 import logging
+import os
+import sqlite3
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from catalogue_loader import load_payment_info_from_file, get_unique_bins, get_unique_geos, get_bins_data, search_by_bin, search_by_geo, initialize_bins_table, initialize_payments_table, set_bin_price, update_user_balance, get_user_balance, add_price_column_to_bins, get_items_count_by_bin, get_items_by_bin, check_table_structure, sell_item
 from user_manager import initialize_users_table, register_user, get_user_profile
@@ -102,7 +104,12 @@ def handle_admin_buttons(call):
         except ValueError:
             bot.send_message(call.message.chat.id, "⚠️ Ошибка: некорректный ID BIN.")
 
-
+@bot.message_handler(commands=['go'])
+def go(message):
+    bot.send_message(
+        message.chat.id,
+        "📁 Пожалуйста, отправьте файл `payments.txt` для загрузки данных.",
+    )
 # Обработка нажатий на кнопки
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call: CallbackQuery):
@@ -121,7 +128,7 @@ def handle_callback(call: CallbackQuery):
             keyboard = InlineKeyboardMarkup()
             keyboard.add(InlineKeyboardButton('Бины', callback_data='bins'))
             keyboard.add(InlineKeyboardButton('🌍 Гео', callback_data='geo'))
-            #keyboard.add(InlineKeyboardButton('🔍 Поиск по BIN', callback_data='search_bin'))
+# ??????????????????           keyboard.add(InlineKeyboardButton('🔍 Поиск по BIN', callback_data='search_bin')) ??????????????????????
             keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='back_to_main'))
 
             bot.edit_message_text(
@@ -307,12 +314,15 @@ def handle_callback(call: CallbackQuery):
 
         elif data == 'search_bin':
             bot.edit_message_text(
-                text="Введите первые 6 цифр BIN для поиска:",
+                text="🔍 Введите первые 6 цифр BIN для поиска:",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton('🔙 Назад', callback_data='list_items')
+                )
             )
             user_states[call.message.chat.id] = 'awaiting_bin_input'
+
 
         elif data == 'rules':
             bot.edit_message_text(
@@ -497,23 +507,32 @@ def handle_state_messages(message: Message):
     chat_id = message.chat.id
     state = user_states.get(chat_id)
 
+    # 📌 Обработка поиска BIN
     if state == 'awaiting_bin_input':
-        if message.text.isdigit():
-            results = search_by_bin(message.text)
+        if message.text.isdigit() and len(message.text) == 6:
+            results = search_by_bin(message.text)  # Поиск по BIN
             if results:
-                text = "📊 Результаты поиска:\n"
+                text = "📊 Результаты поиска по BIN:\n"
+                keyboard = InlineKeyboardMarkup()
                 for geo, bin_code in results:
                     text += f"🌍 {geo}, BIN: {bin_code}\n"
+                    keyboard.add(InlineKeyboardButton(
+                        f"Купить {bin_code}",
+                        callback_data=f'buy_{bin_code}'
+                    ))
+                keyboard.add(InlineKeyboardButton('🔙 Назад', callback_data='list_items'))
             else:
                 text = "❌ Ничего не найдено по указанному BIN."
+                keyboard = InlineKeyboardMarkup().add(
+                    InlineKeyboardButton('🔙 Назад', callback_data='list_items')
+                )
             
-            bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton('🔙 Назад', callback_data='list_items')
-            ))
+            bot.send_message(chat_id, text, reply_markup=keyboard)
             user_states.pop(chat_id)
         else:
-            bot.send_message(chat_id, "⚠️ Введите корректные цифры BIN.")
+            bot.send_message(chat_id, "⚠️ Введите корректные 6 цифр BIN.")
     
+    # 📌 Обновление цены BIN
     elif state.startswith('awaiting_price_for_'):
         try:
             bin_id = int(state.split('_')[-1])
@@ -523,9 +542,11 @@ def handle_state_messages(message: Message):
             user_states.pop(chat_id)
         except ValueError:
             bot.send_message(chat_id, "⚠️ Укажите корректное число в качестве цены.")
+    
     else:
         bot.send_message(chat_id, "⚠️ Непредвиденное состояние. Попробуйте еще раз.")
         user_states.pop(chat_id)
+
 
 # 📌 4. Обработчик для неизвестных команд
 @bot.message_handler(func=lambda message: True)
@@ -574,6 +595,75 @@ def handle_admin_response(call):
     except Exception as e:
         bot.send_message(call.message.chat.id, f"❌ Произошла ошибка: {e}")
 
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    try:
+        # Проверяем имя файла
+        file_info = bot.get_file(message.document.file_id)
+        file_name = message.document.file_name
+        
+        if not file_name.endswith('.txt'):
+            bot.send_message(message.chat.id, "⚠️ Пожалуйста, отправьте текстовый файл с расширением `.txt`.")
+            return
+        
+        # Скачиваем файл
+        downloaded_file = bot.download_file(file_info.file_path)
+        temp_file_path = f"temp_{file_name}"
+        
+        with open(temp_file_path, 'wb') as file:
+            file.write(downloaded_file)
+        
+        bot.send_message(message.chat.id, "📊 Файл получен! Начинаю обработку данных...")
+        
+        # Чтение файла и запись данных в базу
+        with open(temp_file_path, 'r', encoding='utf-8') as file:
+            content = file.read().strip()
+        
+        with sqlite3.connect('payment_info.db') as conn:
+            cursor = conn.cursor()
+            records = content.split(";")
+            
+            for record in records:
+                try:
+                    geo, bank, number, date, code = record.split(",")
+                    bin_code = number[:6]
+                    
+                    # Проверяем наличие BIN'а
+                    cursor.execute("SELECT id FROM bins WHERE bin = ?", (bin_code,))
+                    bin_row = cursor.fetchone()
+                    
+                    if not bin_row:
+                        cursor.execute("INSERT INTO bins (bin) VALUES (?)", (bin_code,))
+                        conn.commit()
+                        bin_id = cursor.lastrowid
+                        print(f"Добавлен новый BIN: {bin_code} с ID {bin_id}")
+                    else:
+                        bin_id = bin_row[0]
+                    
+                    # Проверяем уникальность записи
+                    cursor.execute("""
+                        SELECT * FROM items 
+                        WHERE geo = ? AND bank = ? AND number = ? AND date = ? AND code = ? AND bin = ?
+                    """, (geo, bank, number, date, code, bin_code))
+                    
+                    if not cursor.fetchone():
+                        cursor.execute("""
+                            INSERT INTO items (geo, bank, number, date, code, bin) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (geo, bank, number, date, code, bin_code))
+                        conn.commit()
+                        bot.send_message(message.chat.id, f"✅ Запись для карты {number} добавлена!")
+                    else:
+                        bot.send_message(message.chat.id, f"ℹ️ Запись для карты {number} уже существует!")
+                
+                except ValueError:
+                    bot.send_message(message.chat.id, f"⚠️ Ошибка обработки записи: {record}")
+        
+        os.remove(temp_file_path)  # Удаляем временный файл
+        bot.send_message(message.chat.id, "🎯 Обработка завершена успешно!")
+    
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Произошла ошибка: {str(e)}")
 
 # Запуск бота
 if __name__ == '__main__':
